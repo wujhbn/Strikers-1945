@@ -22,8 +22,8 @@ export const GAME_LEVELS: LevelConfig[] = [
     enemySpawnRate: 1000,
     enemyTypes: ['Meteor'], // 只有隕石
     winCondition: { 
-      type: 'survive', 
-      seconds: 60
+      type: 'score', 
+      target: 3000
     }
   },
   {
@@ -35,7 +35,7 @@ export const GAME_LEVELS: LevelConfig[] = [
     enemyTypes: ['Fighter', 'Fighter', 'Fighter', 'Carrier'], // 運輸機機率較低，會掉落火力升級
     winCondition: { 
       type: 'score', 
-      target: 2000
+      target: 6000
     }
   },
   {
