@@ -17,6 +17,10 @@ interface Entity {
   state?: number;
   timer?: number;
   hp?: number;
+  maxHp?: number;
+  angle?: number;
+  targetX?: number;
+  targetY?: number;
 }
 
 interface GameState {
@@ -150,6 +154,10 @@ export default function GameCanvas() {
       state.levelTransitionTimer = 0;
       state.levelStartScore = 0;
     }
+    // 重置子彈與敵人狀態
+    state.enemies.forEach(e => e.active = false);
+    state.enemyBullets.forEach(b => b.active = false);
+    state.items.forEach(i => i.active = false);
   }
 
   // 處理滑鼠與觸控的指標事件
@@ -334,141 +342,209 @@ export default function GameCanvas() {
       if (b.y + b.height < 0 || b.x < 0 || b.x > width) b.active = false;
     });
 
-    // Boss 生成邏輯
-    if (level.winCondition.type === 'bossKill' && !state.bossSpawned && state.levelTime > 3) {
-      state.bossSpawned = true;
-      spawnEntity(state.enemies, {
-        x: width / 2 - 60,
-        y: -150, // 從畫面外進場
-        width: 120,
-        height: 100,
-        speed: 150,
-        vy: 50, 
-        vx: 150, 
-        type: 'Boss',
-        state: 0, // 0 = 進場期，1 = 戰鬥期
-        timer: 0,
-        hp: 150 // Boss 高血量
-      });
-    }
-
-    // 雜魚生成邏輯 (如果 Boss 出現就大幅降低雜魚機率，或者照常)
-    if (!state.bossSpawned) {
+    // 生成敵機邏輯
+    if (!state.bossSpawned && level.enemyTypes.length > 0) {
       state.enemySpawnTimer += deltaTime;
       if (state.enemySpawnTimer > level.enemySpawnRate / 1000) { 
-        const allowedTypes = level.enemyTypes;
-        const type = allowedTypes[Math.floor(Math.random() * allowedTypes.length)];
+        const type = level.enemyTypes[Math.floor(Math.random() * level.enemyTypes.length)];
         
-        let ew = 40, eh = 40, espd = 150 + Math.random() * 150, ehp = 1;
-        if (type === 'Carrier') { ew = 60; eh = 60; espd = 80; ehp = 5; }
-        else if (type === 'Meteor') { ew = 30; eh = 30; espd = 200 + Math.random() * 200; ehp = 2; }
-        else if (type === 'Fighter') { ew = 35; eh = 40; espd = 150 + Math.random() * 100; ehp = 1; }
-
-        spawnEntity(state.enemies, {
-          x: Math.random() * (width - ew),
-          y: -eh,
-          width: ew,
-          height: eh,
-          speed: espd,
-          vy: espd,
-          type: type,
-          state: 0,
-          timer: 0,
-          hp: ehp, 
-        });
+        if (type === 'VFormation') {
+          // V 型編隊：一次生成 3 架
+          const side = Math.random() > 0.5 ? 'left' : 'right';
+          const startX = side === 'left' ? -50 : width + 50;
+          const targetVX = side === 'left' ? 300 : -300;
+          const offsets = [{dx: 0, dy: 0}, {dx: side === 'left' ? -40 : 40, dy: -40}, {dx: side === 'left' ? -80 : 80, dy: -80}];
+          
+          offsets.forEach(off => {
+            spawnEntity(state.enemies, {
+              x: startX + off.dx, y: 100 + off.dy, width: 35, height: 40,
+              vx: targetVX, vy: 200, type: 'VPlane', hp: 1
+            });
+          });
+        } else {
+          // 一般敵機生成
+          let props: Partial<Entity> = { x: Math.random() * (width - 40), y: -50, type: type, hp: 1 };
+          
+          switch(type) {
+            case 'Meteor': 
+              props.speed = 150 + Math.random() * 100;
+              props.vy = props.speed;
+              props.hp = 2;
+              break;
+            case 'Turret':
+              props.targetY = 100 + Math.random() * 150;
+              props.vy = 200;
+              props.state = 0; // 進場
+              props.timer = 0;
+              props.hp = 3;
+              break;
+            case 'SpreadShooter':
+              props.targetY = 50 + Math.random() * 100;
+              props.vy = 150;
+              props.state = 0;
+              props.hp = 4;
+              break;
+            case 'HeavyArmor':
+              props.speed = 50;
+              props.vy = 50;
+              props.hp = 15;
+              props.width = 60; props.height = 60;
+              break;
+            case 'Sweeper':
+              props.x = width / 2 - 25;
+              props.targetX = Math.random() > 0.5 ? width - 60 : 10;
+              props.vy = 100;
+              props.targetY = 80;
+              props.state = 0; // 進場
+              props.hp = 8;
+              props.width = 50; props.height = 50;
+              break;
+          }
+          spawnEntity(state.enemies, props);
+        }
         state.enemySpawnTimer = 0;
       }
     }
 
-    // 更新敵機位置與動作
+    // Boss 生成邏輯 (Level 5)
+    if (level.winCondition.type === 'bossKill' && !state.bossSpawned && state.levelTime > 2) {
+      state.bossSpawned = true;
+      spawnEntity(state.enemies, {
+        x: width / 2 - 80, y: -200, width: 160, height: 120,
+        vx: 150, vy: 50, type: 'Boss', state: 0, timer: 0,
+        hp: 400, maxHp: 400
+      });
+    }
+
+    // 更新敵機位置與動作核心 AI
     state.enemies.forEach((e) => {
       if (!e.active) return;
       e.timer = (e.timer || 0) + deltaTime;
 
-      if (e.type === 'Meteor') {
-        e.y += (e.vy || e.speed) * deltaTime;
-        // 隕石簡單旋轉效果在 draw 處理
-      } else if (e.type === 'Fighter') {
-        e.y += (e.vy || e.speed) * deltaTime;
-        if (e.timer! > 2.0 && e.y < height * 0.7) { // 每兩秒發射一次單發直下子彈
-           e.timer = 0;
-           spawnEntity(state.enemyBullets, {
-               x: e.x + e.width / 2 - 4,
-               y: e.y + e.height,
-               width: 8, height: 16, vx: 0, vy: 400
-           });
-        }
-      } else if (e.type === 'Carrier') {
-        e.y += (e.vy || 80) * deltaTime; // 緩慢向下
-      } else if (e.type === 'Boss') {
-        if (e.state === 0) { // 進場
-          e.y += (e.vy || 50) * deltaTime;
-          if (e.y >= 50) {
-            e.state = 1; // 開始戰鬥左右移動
-            e.timer = 0;
-            e.vx = 150; 
+      switch(e.type) {
+        case 'Meteor':
+          e.y += (e.vy || 0) * deltaTime;
+          break;
+        case 'Turret':
+          if (e.state === 0) {
+            e.y += (e.vy || 0) * deltaTime;
+            if (e.y >= (e.targetY || 0)) { e.state = 1; e.timer = 0; }
+          } else if (e.state === 1) {
+            // 每 2 秒發射自機狙
+            if (e.timer! > 2.0) {
+              e.timer = 0;
+              const angle = Math.atan2(state.player.y - e.y, state.player.x - e.x);
+              const bSpeed = 300;
+              spawnEntity(state.enemyBullets, {
+                x: e.x + e.width / 2 - 4, y: e.y + e.height, width: 8, height: 8,
+                vx: Math.cos(angle) * bSpeed, vy: Math.sin(angle) * bSpeed, type: 'aimed'
+              });
+            }
           }
-        } else if (e.state === 1) { // 戰鬥期
-          e.x += (e.vx || 150) * deltaTime;
-          // 碰到邊界反彈
-          if (e.x <= 0) { e.x = 0; e.vx = Math.abs(e.vx || 150); }
-          if (e.x + e.width >= width) { e.x = width - e.width; e.vx = -Math.abs(e.vx || 150); }
+          break;
+        case 'VPlane':
+          e.x += (e.vx || 0) * deltaTime;
+          e.y += (e.vy || 0) * deltaTime;
+          break;
+        case 'SpreadShooter':
+          if (e.state === 0) {
+            e.y += (e.vy || 0) * deltaTime;
+            if (e.y >= (e.targetY || 0)) { e.state = 1; e.timer = 0; }
+          } else if (e.state === 1) {
+            if (e.timer! > 1.5) {
+              e.timer = 0;
+              [-0.4, 0, 0.4].forEach(angleOff => {
+                spawnEntity(state.enemyBullets, {
+                  x: e.x + e.width / 2 - 5, y: e.y + e.height, width: 10, height: 10,
+                  vx: Math.sin(angleOff) * 350, vy: Math.cos(angleOff) * 350
+                });
+              });
+            }
+          }
+          break;
+        case 'HeavyArmor':
+          e.y += (e.vy || 0) * deltaTime;
+          break;
+        case 'Sweeper':
+          if (e.state === 0) {
+            e.y += (e.vy || 0) * deltaTime;
+            if (e.y >= (e.targetY || 0)) { e.state = 1; e.timer = 0; e.vx = 150; }
+          } else if (e.state === 1) {
+            e.x += (e.vx || 0) * deltaTime;
+            if (e.x <= 10 || e.x >= width - 60) e.vx = -e.vx!;
+            // 持續垂直子彈雨
+            if (e.timer! > 0.2) {
+              e.timer = 0;
+              spawnEntity(state.enemyBullets, {
+                x: e.x + e.width / 2 - 3, y: e.y + e.height, width: 6, height: 12,
+                vx: 0, vy: 500
+              });
+            }
+          }
+          break;
+        case 'Boss':
+          const phase2 = e.hp! < (e.maxHp! / 2);
+          if (e.state === 0) { // 進場
+            e.y += (e.vy || 50) * deltaTime;
+            if (e.y >= 60) { e.state = 1; e.timer = 0; e.vx = phase2 ? 250 : 150; }
+          } else if (e.state === 1) { // 戰鬥
+            e.x += (e.vx || 0) * deltaTime;
+            if (e.x <= 20 || e.x >= width - e.width - 20) e.vx = -e.vx!;
 
-          if (e.timer! > 3.0) { // 每三秒發射扇形散彈
-            e.timer = 0;
-            const angles = [-40, -20, 0, 20, 40]; 
-            const speed = 350;
-            angles.forEach(angle => {
-               const rad = angle * Math.PI / 180;
-               spawnEntity(state.enemyBullets, {
-                 x: e.x + e.width / 2 - 5,
-                 y: e.y + e.height,
-                 width: 10, height: 10,
-                 vx: Math.sin(rad) * speed,
-                 vy: Math.cos(rad) * speed,
-               });
-            });
-            // 讓 Boss 身材稍微抖動當作發射動畫，或閃個光
+            const shootFreq = phase2 ? 1.5 : 2.5;
+            if (e.timer! > shootFreq) {
+              e.timer = 0;
+              // 交替射擊
+              const pattern = Math.random() > 0.5 ? 'spread' : 'aimed';
+              if (pattern === 'spread') {
+                [-0.6, -0.3, 0, 0.3, 0.6].forEach(a => {
+                  spawnEntity(state.enemyBullets, {
+                    x: e.x + e.width / 2, y: e.y + e.height, width: 12, height: 12,
+                    vx: Math.sin(a) * 400, vy: Math.cos(a) * 400
+                  });
+                });
+              } else {
+                 const angle = Math.atan2(state.player.y - e.y, state.player.x - e.x);
+                 spawnEntity(state.enemyBullets, {
+                   x: e.x + e.width / 2, y: e.y + e.height, width: 15, height: 15,
+                   vx: Math.cos(angle) * 450, vy: Math.sin(angle) * 450, type: 'aimed'
+                 });
+              }
+            }
+            
+            // 階段二額外召喚雷射
+            if (phase2) {
+               if (!e.targetX) e.targetX = 0; // 用於雷射計時
+               e.targetX += deltaTime;
+               if (e.targetX > 5.0) { // 每 5 秒一次雷射
+                  e.targetX = 0;
+                  e.state = 2; // 雷射預警期
+                  e.timer = 0;
+                  e.targetY = state.player.x + 20; // 預警位置
+               }
+            }
+          } else if (e.state === 2) { // 雷射預警期
+             if (e.timer! > 1.0) { // 預警 1 秒
+                e.state = 3; // 發射期
+                e.timer = 0;
+                // 發射超高速雷射子彈（一長串）
+                for (let i = 0; i < 10; i++) {
+                   spawnEntity(state.enemyBullets, {
+                     x: e.targetY! - 10, y: e.y + e.height + i * 40, width: 20, height: 40,
+                     vx: 0, vy: 1500, type: 'laser'
+                   });
+                }
+             }
+          } else if (e.state === 3) {
+             if (e.timer! > 0.5) { e.state = 1; e.timer = 0; }
           }
-        }
-      } else if (e.type === 'B') {
-        // 保留原有的 turret 邏輯 (舊關卡如有需要)
-        if (e.state === 0) {
-          e.y += e.speed * deltaTime;
-          if (e.y > height * 0.2) {
-            e.state = 1; // 停頓
-            e.timer = 0;
-          }
-        } else if (e.state === 1) {
-          if (e.timer! > 1) { // 稍微停頓 1 秒才發射
-            const angles = [-Math.PI / 8, 0, Math.PI / 8]; 
-            const speed = 300;
-            angles.forEach(angle => {
-               spawnEntity(state.enemyBullets, {
-                 x: e.x + e.width / 2 - 4,
-                 y: e.y + e.height,
-                 width: 10, 
-                 height: 10,
-                 vx: Math.sin(angle) * speed,
-                 vy: Math.cos(angle) * speed,
-               });
-            });
-            e.state = 2; 
-            e.timer = 0;
-          }
-        } else if (e.state === 2) {
-           if (e.timer! > 1) { // 射完再停留 1 秒
-               e.state = 3; 
-           }
-        } else if (e.state === 3) {
-           e.y += e.speed * deltaTime; // 繼續向下
-        }
-      } else {
-        // A 型，直線往下
-        e.y += (e.vy || e.speed) * deltaTime;
+          break;
+        case 'Carrier': // 保留舊的支援
+           e.y += 80 * deltaTime;
+           break;
       }
 
-      if (e.y > height) e.active = false;
+      if (e.y > height + 100 || e.x < -100 || e.x > width + 100) e.active = false;
     });
 
     // 更新掉落道具位置
@@ -550,39 +626,37 @@ export default function GameCanvas() {
         if (enemy.active && checkAABBCollision(hitBox, enemy)) {
           audioSystem.playDamage();
           state.lives -= 1;
-          enemy.active = false; // 敵機撞毀後消失
+          enemy.active = false; 
           
           if (state.lives <= 0) {
              state.gameOver = true;
              audioSystem.setGameOver(true);
           } else {
-             state.player.invulnerableTimer = 3; // 給予 3 秒的無敵時間
+             state.player.invulnerableTimer = 3; 
           }
         }
       });
 
       // 撞擊敵軍子彈
-      if (state.player.invulnerableTimer <= 0) {
-        state.enemyBullets.forEach((bullet) => {
-          if (bullet.active && checkAABBCollision(hitBox, bullet)) {
-             audioSystem.playDamage();
-             state.lives -= 1;
-             bullet.active = false; 
-             
-             if (state.lives <= 0) {
-                state.gameOver = true;
-                audioSystem.setGameOver(true);
-             } else {
-                state.player.invulnerableTimer = 3; // 給予 3 秒的無敵時間
-             }
-          }
-        });
-      }
+      state.enemyBullets.forEach((bullet) => {
+        if (bullet.active && checkAABBCollision(hitBox, bullet)) {
+           audioSystem.playDamage();
+           state.lives -= 1;
+           bullet.active = false; 
+           
+           if (state.lives <= 0) {
+              state.gameOver = true;
+              audioSystem.setGameOver(true);
+           } else {
+              state.player.invulnerableTimer = 3;
+           }
+        }
+      });
     }
 
     // 更新背景星星（垂直捲軸效果）
     state.stars.forEach(star => {
-        star.y += star.speed * deltaTime;
+        star.y += star.speed * level.backgroundSpeed * 50 * deltaTime;
         if (star.y > height) {
             star.y = 0;
             star.x = Math.random() * width;
@@ -596,11 +670,11 @@ export default function GameCanvas() {
     const level = GAME_LEVELS[state.currentLevelIndex];
 
     // 清除畫布並畫上深色背景
-    ctx.fillStyle = level.backgroundColor || '#0f172a'; // Tailwind slate-900 預設
+    ctx.fillStyle = level.backgroundColor || '#0f172a';
     ctx.fillRect(0, 0, width, height);
 
     // 畫出星星
-    ctx.fillStyle = '#cbd5e1'; // Tailwind slate-300
+    ctx.fillStyle = '#cbd5e1'; 
     state.stars.forEach(star => {
         ctx.beginPath();
         ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
@@ -608,7 +682,7 @@ export default function GameCanvas() {
     });
 
     // 畫出玩家子彈
-    ctx.fillStyle = '#fbbf24'; // Tailwind amber-400
+    ctx.fillStyle = '#fbbf24'; 
     state.playerBullets.forEach((b) => {
       if (b.active) {
         ctx.fillRect(b.x, b.y, b.width, b.height);
@@ -616,12 +690,19 @@ export default function GameCanvas() {
     });
 
     // 畫出敵軍子彈
-    ctx.fillStyle = '#f97316'; // Tailwind orange-500
     state.enemyBullets.forEach((b) => {
       if (b.active) {
-        ctx.beginPath();
-        ctx.arc(b.x + b.width/2, b.y + b.height/2, b.width/2, 0, Math.PI * 2);
-        ctx.fill();
+        if (b.type === 'laser') {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(b.x, b.y, b.width, b.height);
+          ctx.strokeStyle = '#ef4444';
+          ctx.strokeRect(b.x, b.y, b.width, b.height);
+        } else {
+          ctx.fillStyle = b.type === 'aimed' ? '#ef4444' : '#f97316'; 
+          ctx.beginPath();
+          ctx.arc(b.x + b.width/2, b.y + b.height/2, b.width/2, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     });
 
@@ -632,124 +713,74 @@ export default function GameCanvas() {
       ctx.save();
       ctx.translate(e.x + e.width / 2, e.y + e.height / 2);
 
-      if (e.type === 'Fighter' || e.type === 'A') {
-        // 銳利的敵軍輕型戰機
-        ctx.fillStyle = '#ef4444'; // Tailwind red-500
-        ctx.beginPath();
-        ctx.moveTo(0, 20); // 機鼻朝下
-        ctx.lineTo(20, -10); // 右翼尖端
-        ctx.lineTo(5, -5); // 右翼內側
-        ctx.lineTo(0, -20); // 尾翼
-        ctx.lineTo(-5, -5); // 左翼內側
-        ctx.lineTo(-20, -10); // 左翼尖端
-        ctx.closePath();
-        ctx.fill();
+      const blinkRed = e.hp! < 3 && Math.floor(Date.now() / 100) % 2 === 0;
 
-        // 座艙
-        ctx.fillStyle = '#fca5a5'; // Tailwind red-300
-        ctx.beginPath();
-        ctx.ellipse(0, 5, 3, 6, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-      } else if (e.type === 'Meteor') {
-        // 簡單旋轉的太空隕石模型
-        ctx.rotate((e.y * 0.02) % (Math.PI * 2));
-        ctx.fillStyle = '#64748b'; // Tailwind slate-500
-        ctx.beginPath();
-        ctx.moveTo(-10, -15);
-        ctx.lineTo(10, -12);
-        ctx.lineTo(15, 5);
-        ctx.lineTo(5, 15);
-        ctx.lineTo(-12, 10);
-        ctx.closePath();
-        ctx.fill();
+      switch(e.type) {
+        case 'Meteor':
+          ctx.rotate((e.y * 0.02) % (Math.PI * 2));
+          ctx.fillStyle = '#64748b'; ctx.beginPath();
+          ctx.moveTo(-e.width/2, -e.height/2); ctx.lineTo(e.width/2, -e.height/3);
+          ctx.lineTo(e.width/2+5, e.height/2); ctx.lineTo(-e.width/2-2, e.height/2+3);
+          ctx.closePath(); ctx.fill();
+          break;
 
-        ctx.fillStyle = '#334155'; // Tailwind slate-700
-        ctx.beginPath();
-        ctx.arc(-2, -2, 3, 0, Math.PI * 2);
-        ctx.arc(5, 5, 2, 0, Math.PI * 2);
-        ctx.fill();
+        case 'Turret':
+        case 'B':
+          ctx.fillStyle = (e.state === 1 && Math.floor(e.timer! * 10) % 2 === 0) ? '#fee2e2' : '#6366f1'; 
+          ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
+          ctx.fillStyle = '#1e1b4b'; ctx.fillRect(-4, -e.height/2, 8, -15);
+          break;
 
-      } else if (e.type === 'Boss') {
-        const blinkBoss = e.timer && e.timer > 2.5 && Math.floor(e.timer * 15) % 2 === 0;
-        
-        // 巨型守護者核心
-        ctx.fillStyle = blinkBoss ? '#ef4444' : '#1e3a8a'; // blue-900 
-        ctx.beginPath();
-        ctx.moveTo(0, 50); // 前端 (向下)
-        ctx.lineTo(60, 0); // 右側
-        ctx.lineTo(40, -50); // 右後
-        ctx.lineTo(-40, -50); // 左後
-        ctx.lineTo(-60, 0); // 左側
-        ctx.closePath();
-        ctx.fill();
+        case 'VPlane':
+          ctx.fillStyle = '#ef4444'; ctx.beginPath();
+          ctx.moveTo(0, 15); ctx.lineTo(15, -15); ctx.lineTo(0, -5); ctx.lineTo(-15, -15);
+          ctx.closePath(); ctx.fill();
+          break;
 
-        // 巨型裝甲護翼
-        ctx.fillStyle = '#0f172a'; // slate-900
-        ctx.beginPath();
-        ctx.moveTo(40, -20);
-        ctx.lineTo(70, -30);
-        ctx.lineTo(70, 20);
-        ctx.lineTo(20, 40);
-        ctx.closePath();
-        ctx.fill();
+        case 'SpreadShooter':
+          ctx.fillStyle = '#f59e0b'; ctx.beginPath();
+          ctx.moveTo(0, 20); ctx.lineTo(20, -10); ctx.lineTo(-20, -10);
+          ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#78350f'; ctx.fillRect(-15, -5, 30, 5);
+          break;
 
-        ctx.beginPath();
-        ctx.moveTo(-40, -20);
-        ctx.lineTo(-70, -30);
-        ctx.lineTo(-70, 20);
-        ctx.lineTo(-20, 40);
-        ctx.closePath();
-        ctx.fill();
+        case 'HeavyArmor':
+          ctx.fillStyle = '#334155'; ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
+          ctx.strokeStyle = '#94a3b8'; ctx.strokeRect(-e.width/2+5, -e.height/2+5, e.width-10, e.height-10);
+          ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI*2); ctx.fill();
+          break;
 
-        // Boss 之眼 / 核心能量匣
-        ctx.fillStyle = blinkBoss ? '#ffffff' : '#f43f5e'; // rose-500
-        ctx.beginPath();
-        ctx.ellipse(0, 10, 15, 25, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = blinkBoss ? '#f43f5e' : '#fda4af'; // rose-300
-        ctx.beginPath();
-        ctx.ellipse(0, 10, 8, 15, 0, 0, Math.PI * 2);
-        ctx.fill();
+        case 'Sweeper':
+          ctx.fillStyle = '#10b981'; ctx.fillRect(-e.width/2, -e.height/2, e.width, e.height);
+          ctx.fillStyle = '#064e3b'; ctx.fillRect(-e.width/2, 10, e.width, 10);
+          break;
 
-      } else if (e.type === 'B' || e.type === 'Carrier') {
-        // 發射前的閃爍警告 (狀態 1 且 timer > 0.5)
-        const isWarning = e.state === 1 && (e.timer || 0) > 0.5;
-        const blinkRed = isWarning && Math.floor((e.timer || 0) * 15) % 2 === 0;
+        case 'Boss':
+          const isP2 = e.hp! < (e.maxHp! / 2);
+          ctx.fillStyle = isP2 ? '#7f1d1d' : '#1e3a8a';
+          ctx.beginPath(); ctx.moveTo(0, 60); ctx.lineTo(80, 0); ctx.lineTo(50, -60); ctx.lineTo(-50, -60); ctx.lineTo(-80, 0); ctx.closePath(); ctx.fill();
+          
+          // Boss Eye
+          ctx.fillStyle = (Math.floor(Date.now() / 200) % 2 === 0) ? '#f43f5e' : '#881337';
+          ctx.beginPath(); ctx.arc(0, 0, 20, 0, Math.PI*2); ctx.fill();
 
-        // 裝甲六角形本體 (Heavy hexagon hull)
-        ctx.fillStyle = blinkRed ? '#ef4444' : '#9333ea'; // Tailwind purple-600
-        ctx.beginPath();
-        ctx.moveTo(0, -25);
-        ctx.lineTo(25, -10);
-        ctx.lineTo(25, 10);
-        ctx.lineTo(0, 25);
-        ctx.lineTo(-25, 10);
-        ctx.lineTo(-25, -10);
-        ctx.closePath();
-        ctx.fill();
+          // 雷射預警
+          if (e.state === 2) {
+             ctx.restore(); ctx.save();
+             ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+             ctx.fillRect(e.targetY! - 15, 0, 30, height);
+             ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+             ctx.setLineDash([5, 5]);
+             ctx.strokeRect(e.targetY! - 15, 0, 30, height);
+          }
+          break;
 
-        // 核心裝甲 (Inner lighter core)
-        ctx.fillStyle = blinkRed ? '#fee2e2' : '#c084fc'; // Tailwind purple-400
-        ctx.beginPath();
-        ctx.moveTo(0, -15);
-        ctx.lineTo(15, -5);
-        ctx.lineTo(15, 5);
-        ctx.lineTo(0, 15);
-        ctx.lineTo(-15, 5);
-        ctx.lineTo(-15, -5);
-        ctx.closePath();
-        ctx.fill();
+        case 'Carrier':
+          ctx.fillStyle = '#9333ea'; ctx.fillRect(-30, -30, 60, 60);
+          break;
 
-        // 雙管重型火砲 (Twin cannons)
-        ctx.fillStyle = blinkRed ? '#991b1b' : '#581c87'; // purple-950
-        ctx.fillRect(-15, 5, 8, 25);
-        ctx.fillRect(7, 5, 8, 25);
-        
-        // 砲口能量發射點 (Cannon glow)
-        ctx.fillStyle = blinkRed ? '#fca5a5' : '#f87171';
-        ctx.fillRect(-12, 28, 2, 6);
-        ctx.fillRect(10, 28, 2, 6);
+        default:
+          ctx.fillStyle = '#ef4444'; ctx.fillRect(-20, -20, 40, 40);
       }
       
       ctx.restore();
@@ -779,83 +810,32 @@ export default function GameCanvas() {
 
     if (isVisible) {
       ctx.save();
-      // 將繪圖原點移動到飛機正中心
       ctx.translate(state.player.x + state.player.width / 2, state.player.y + state.player.height / 2);
-
-      // 主機身 (Main fuselage)
-      ctx.fillStyle = '#2563eb'; // Tailwind blue-600
-      ctx.beginPath();
-      ctx.moveTo(0, -20); // 機鼻
-      ctx.lineTo(10, -5);
-      ctx.lineTo(10, 15);
-      ctx.lineTo(-10, 15);
-      ctx.lineTo(-10, -5);
-      ctx.closePath();
-      ctx.fill();
-
-      // 前掠翼 (Swept-forward wings)
-      ctx.fillStyle = '#1e40af'; // Tailwind blue-800
-      ctx.beginPath();
-      ctx.moveTo(0, -10);
-      ctx.lineTo(25, 10);
-      ctx.lineTo(25, 15);
-      ctx.lineTo(10, 5);
-      ctx.lineTo(-10, 5);
-      ctx.lineTo(-25, 15);
-      ctx.lineTo(-25, 10);
-      ctx.closePath();
-      ctx.fill();
-
-      // 高科技座艙 (Cockpit canopy)
-      ctx.fillStyle = '#67e8f9'; // Tailwind cyan-300
-      ctx.beginPath();
-      ctx.ellipse(0, -5, 4, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // 高能雙引擎火焰特效 (Twin Engine flames)
-      ctx.fillStyle = '#ef4444'; // Tailwind red-500
-      ctx.beginPath();
-      ctx.moveTo(-8, 15);
-      ctx.lineTo(-2, 15);
-      ctx.lineTo(-5, 15 + Math.random() * 15 + 5);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(2, 15);
-      ctx.lineTo(8, 15);
-      ctx.lineTo(5, 15 + Math.random() * 15 + 5);
-      ctx.closePath();
-      ctx.fill();
-
-      // 顯示碰撞核心 (Hitbox core) 讓玩家精準躲避
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-      ctx.beginPath();
-      ctx.arc(0, 0, 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#ec4899'; // 亮粉色核心 Tailwind pink-500
-      ctx.beginPath();
-      ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
-      ctx.fill();
-
+      ctx.fillStyle = '#2563eb'; ctx.beginPath();
+      ctx.moveTo(0, -20); ctx.lineTo(10, -5); ctx.lineTo(10, 15); ctx.lineTo(-10, 15); ctx.lineTo(-10, -5); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#1e40af'; ctx.beginPath();
+      ctx.moveTo(0, -10); ctx.lineTo(25, 10); ctx.lineTo(25, 15); ctx.lineTo(10, 5); ctx.lineTo(-10, 5); ctx.lineTo(-25, 15); ctx.lineTo(-25, 10); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#67e8f9'; ctx.beginPath(); ctx.ellipse(0, -5, 4, 8, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ef4444'; ctx.beginPath();
+      ctx.moveTo(-8, 15); ctx.lineTo(-2, 15); ctx.lineTo(-5, 15 + Math.random() * 10); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(2, 15); ctx.lineTo(8, 15); ctx.lineTo(5, 15 + Math.random() * 10); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ec4899'; ctx.beginPath(); ctx.arc(0, 0, 2.5, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
 
     // 畫出狀態 UI
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 24px monospace';
-    // 左上角畫分數
     ctx.fillText(`SCORE: ${state.score.toString().padStart(6, '0')}`, 20, 40);
-    // 左上角分數下方畫生命值
     ctx.fillText(`LIVES: ${state.lives}`, 20, 70);
 
-    // 中間上方畫關卡進度與條件
     ctx.textAlign = 'center';
     ctx.font = 'bold 16px monospace';
-    ctx.fillStyle = '#64748b'; // slate-500
+    ctx.fillStyle = '#64748b'; 
     ctx.fillText(level.name, width / 2, 30);
     
-    ctx.fillStyle = '#94a3b8'; // slate-400
+    ctx.fillStyle = '#94a3b8'; 
     if (level.winCondition.type === 'survive') {
       const timeLeft = Math.max(0, Math.ceil(level.winCondition.seconds - state.levelTime));
       ctx.fillText(`SURVIVE: ${timeLeft}s`, width / 2, 55);
@@ -863,22 +843,17 @@ export default function GameCanvas() {
       const currentLevelScore = state.score - state.levelStartScore;
       ctx.fillText(`TARGET SCORE: ${currentLevelScore} / ${level.winCondition.target}`, width / 2, 55);
     }
-    ctx.textAlign = 'left'; // 恢復預設
+    ctx.textAlign = 'left';
 
-    // 畫出 Level Clear 過場動畫字卡
     if (state.levelTransitionTimer > 0) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'; // 半透明遮罩
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
       ctx.fillRect(0, 0, width, height);
-
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
       ctx.font = 'bold 42px monospace';
       ctx.fillText('LEVEL CLEAR', width / 2, height / 2 - 20);
-
       const nextLevel = GAME_LEVELS[state.currentLevelIndex + 1];
       if (nextLevel) {
-        ctx.fillStyle = '#cbd5e1'; // slate-300
-        ctx.font = 'bold 20px monospace';
+        ctx.fillStyle = '#cbd5e1'; ctx.font = 'bold 20px monospace';
         ctx.fillText(`NEXT: ${nextLevel.name}`, width / 2, height / 2 + 25);
       }
       ctx.textAlign = 'left';
