@@ -363,13 +363,14 @@ export default function GameCanvas() {
           });
         } else {
           // 一般敵機生成
-          let props: Partial<Entity> = { x: Math.random() * (width - 40), y: -50, type: type, hp: 1 };
+          let props: Partial<Entity> = { x: Math.random() * (width - 40), y: -50, type: type, hp: 1, width: 40, height: 40 };
           
           switch(type) {
             case 'Meteor': 
               props.speed = 150 + Math.random() * 100;
               props.vy = props.speed;
               props.hp = 2;
+              props.width = 45; props.height = 45;
               break;
             case 'Turret':
               props.targetY = 100 + Math.random() * 150;
@@ -377,12 +378,14 @@ export default function GameCanvas() {
               props.state = 0; // 進場
               props.timer = 0;
               props.hp = 3;
+              props.width = 30; props.height = 30;
               break;
             case 'SpreadShooter':
               props.targetY = 50 + Math.random() * 100;
               props.vy = 150;
               props.state = 0;
               props.hp = 4;
+              props.width = 40; props.height = 40;
               break;
             case 'HeavyArmor':
               props.speed = 50;
@@ -656,7 +659,7 @@ export default function GameCanvas() {
 
     // 更新背景星星（垂直捲軸效果）
     state.stars.forEach(star => {
-        star.y += star.speed * level.backgroundSpeed * 50 * deltaTime;
+        star.y += star.speed * level.backgroundSpeed * deltaTime;
         if (star.y > height) {
             star.y = 0;
             star.x = Math.random() * width;
@@ -718,10 +721,22 @@ export default function GameCanvas() {
       switch(e.type) {
         case 'Meteor':
           ctx.rotate((e.y * 0.02) % (Math.PI * 2));
-          ctx.fillStyle = '#64748b'; ctx.beginPath();
-          ctx.moveTo(-e.width/2, -e.height/2); ctx.lineTo(e.width/2, -e.height/3);
-          ctx.lineTo(e.width/2+5, e.height/2); ctx.lineTo(-e.width/2-2, e.height/2+3);
-          ctx.closePath(); ctx.fill();
+          ctx.fillStyle = '#475569'; // slate-600
+          ctx.beginPath();
+          ctx.moveTo(-e.width/2, -e.height/2 + 5);
+          ctx.lineTo(-e.width/3, -e.height/2);
+          ctx.lineTo(e.width/3, -e.height/2 - 2);
+          ctx.lineTo(e.width/2, -e.height/3);
+          ctx.lineTo(e.width/2 + 5, e.height/4);
+          ctx.lineTo(e.width/3, e.height/2);
+          ctx.lineTo(-e.width/4, e.height/2 + 3);
+          ctx.lineTo(-e.width/2, e.height/3);
+          ctx.closePath();
+          ctx.fill();
+          // Add some "craters"
+          ctx.fillStyle = '#334155';
+          ctx.beginPath(); ctx.arc(-5, -5, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(8, 6, 3, 0, Math.PI * 2); ctx.fill();
           break;
 
         case 'Turret':
@@ -838,10 +853,19 @@ export default function GameCanvas() {
     ctx.fillStyle = '#94a3b8'; 
     if (level.winCondition.type === 'survive') {
       const timeLeft = Math.max(0, Math.ceil(level.winCondition.seconds - state.levelTime));
-      ctx.fillText(`SURVIVE: ${timeLeft}s`, width / 2, 55);
+      ctx.fillStyle = '#60a5fa'; // 藍色強調生存
+      ctx.fillText(`GOAL: SURVIVE ${timeLeft}s`, width / 2, 55);
+      // 次要顯示當前分數
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px monospace';
+      ctx.fillText(`CURRENT SCORE: ${state.score - state.levelStartScore}`, width / 2, 75);
     } else if (level.winCondition.type === 'score') {
       const currentLevelScore = state.score - state.levelStartScore;
-      ctx.fillText(`TARGET SCORE: ${currentLevelScore} / ${level.winCondition.target}`, width / 2, 55);
+      ctx.fillStyle = '#fbbf24'; // 金色強調分數
+      ctx.fillText(`GOAL: ${currentLevelScore} / ${level.winCondition.target} PTS`, width / 2, 55);
+    } else if (level.winCondition.type === 'bossKill') {
+      ctx.fillStyle = '#f87171'; // 紅色強調 Boss
+      ctx.fillText('GOAL: DEFEAT THE BOSS', width / 2, 55);
     }
     ctx.textAlign = 'left';
 
